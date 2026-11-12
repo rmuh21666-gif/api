@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <title>Smart Access Control</title>
+  <!-- Load library tracking.js untuk Face Detection -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/tracking.js/1.1.3/tracking-min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/tracking.js/1.1.3/data/face-min.js"></script>
+  
+  <style>
+    :root {
+      --bg-dark: #0f172a;
+      --card-bg: #1e293b;
+      --text-light: #f8fafc;
+      --accent-blue: #3b82f6;
+      --success-green: #10b981;
+      --error-red: #ef4444;
+    }
+
+    body {
+      margin: 0;
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background-color: var(--bg-dark);
+      color: var(--text-light);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+    }
+
+    .container {
+      background: var(--card-bg);
+      padding: 2rem;
+      border-radius: 16px;
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+      width: 100%;
+      max-width: 420px;
+      text-align: center;
+      border: 1px solid #334155;
+    }
+
+    h2 {
+      margin-top: 0;
+      font-size: 1.4rem;
+      letter-spacing: 0.5px;
+    }
+
+    /* Kamera & Overlay Deteksi Wajah */
+    .camera-wrapper {
+      position: relative;
+      width: 320px;
+      height: 240px;
+      margin: 0 auto 1.2rem;
+      border-radius: 12px;
+      overflow: hidden;
+      background: #000;
+      border: 2px solid #475569;
+    }
+
+    video, canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 320px;
+      height: 240px;
+      transform: scaleX(-1); /* Efek cermin */
+    }
+
+    .cam-status {
+      font-size: 0.85rem;
+      color: #94a3b8;
+      margin-bottom: 1.2rem;
+    }
+
+    /* Input PIN */
+    .input-group {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    input[type="password"] {
+      padding: 14px;
+      font-size: 1.3rem;
+      text-align: center;
+      letter-spacing: 6px;
+      border-radius: 10px;
+      border: 2px solid #475569;
+      background: #0f172a;
+      color: #fff;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    input[type="password"]:focus {
+      border-color: var(--accent-blue);
+    }
+
+    button {
+      padding: 14px;
+      font-size: 1rem;
+      font-weight: 600;
+      border: none;
+      border-radius: 10px;
+      background: var(--accent-blue);
+      color: white;
+      cursor: pointer;
+      transition: background 0.2s, transform 0.1s;
+    }
+
+    button:hover {
+      background: #2563eb;
+    }
+
+    button:active {
+      transform: scale(0.98);
+    }
+
+    button:disabled {
+      background: #475569;
+      cursor: not-allowed;
+    }
+
+    /* Kotak Status Notifikasi */
+    .status-box {
+      margin-top: 1.2rem;
+      padding: 14px;
+      border-radius: 10px;
+      font-weight: bold;
+      display: none;
+      animation: fadeIn 0.3s ease;
+    }
+
+    .status-success {
+      display: block;
+      background-color: rgba(16, 185, 129, 0.2);
+      border: 2px solid var(--success-green);
+      color: #34d399;
+    }
+
+    .status-error {
+      display: block;
+      background-color: rgba(239, 68, 68, 0.2);
+      border: 2px solid var(--error-red);
+      color: #f87171;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(-5px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <h2>🔒 Smart Security Access</h2>
+    
+    <!-- Area Kamera -->
+    <div class="camera-wrapper">
+      <video id="webcam" width="320" height="240" preload autoplay loop muted></video>
+      <canvas id="overlay" width="320" height="240"></canvas>
+    </div>
+    <div id="camStatus" class="cam-status">Menghubungkan kamera pengawas...</div>
+
+    <!-- Form PIN -->
+    <div class="input-group">
+      <input type="password" id="pinInput" placeholder="••••••" maxlength="10" autocomplete="off">
+      <button id="submitBtn" onclick="kirimPIN()">SUBMIT PASSCODE</button>
+    </div>
+
+    <!-- Hasil Status -->
+    <div id="statusBox" class="status-box"></div>
+  </div>
+
+  <!-- Canvas tersembunyi untuk menangkap snapshot foto -->
+  <canvas id="snapshotCanvas" width="320" height="240" style="display:none;"></canvas>
+
+  <script>
+    const video = document.getElementById('webcam');
+    const overlay = document.getElementById('overlay');
+    const context = overlay.getContext('2d');
+    const snapshotCanvas = document.getElementById('snapshotCanvas');
+    const snapCtx = snapshotCanvas.getContext('2d');
+    const camStatus = document.getElementById('camStatus');
+    const statusBox = document.getElementById('statusBox');
+    const submitBtn = document.getElementById('submitBtn');
+    const pinInput = document.getElementById('pinInput');
+
+    let sudahTerdeteksi = false;
+    let faceLockTimer = null;
+
+    // 1. Menyalakan Kamera Depan via HTML5 navigator.mediaDevices.getUserMedia
+    window.onload = function() {
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false })
+          .then(function(stream) {
+            video.srcObject = stream;
+            video.play();
+            camStatus.innerText = "📷 Kamera aktif - Posisikan wajah atau masukkan PIN";
+            mulaiDeteksiWajah();
+          })
+          .catch(function(err) {
+            camStatus.innerText = "⚠️ Akses kamera ditolak/tidak tersedia: " + err.message;
+          });
+      } else {
+        camStatus.innerText = "⚠️ Browser tidak mendukung akses kamera HTML5.";
+      }
+    };
+
+    // 2. Mengambil Snapshot Gambar dari Video
+    function ambilSnapshot() {
+      snapCtx.drawImage(video, 0, 0, snapshotCanvas.width, snapshotCanvas.height);
+      return snapshotCanvas.toDataURL('image/jpeg', 0.8);
+    }
+
+    // 3. Deteksi Wajah Otomatis dengan tracking.js
+    function mulaiDeteksiWajah() {
+      const tracker = new tracking.ObjectTracker('face');
+      tracker.setInitialScale(4);
+      tracker.setStepSize(2);
+      tracker.setEdgesDensity(0.1);
+
+      tracking.track('#webcam', tracker);
+
+      tracker.on('track', function(event) {
+        context.clearRect(0, 0, overlay.width, overlay.height);
+
+        if (event.data.length === 0) {
+          // Reset timer jika wajah hilang dari frame
+          clearTimeout(faceLockTimer);
+          faceLockTimer = null;
+        } else {
+          event.data.forEach(function(rect) {
+            // Gambar kotak deteksi hijau di wajah
+            context.strokeStyle = '#10b981';
+            context.lineWidth = 3;
+            context.strokeRect(rect.x, rect.y, rect.width, rect.height);
+            
+            context.fillStyle = '#10b981';
+            context.font = '12px sans-serif';
+            context.fillText('Face Detected', rect.x, rect.y - 5);
+          });
+
+          // Jika wajah bertahan stabil selama 1.5 detik, otomatis ambil snapshot & izinkan akses
+          if (!sudahTerdeteksi && !faceLockTimer) {
+            camStatus.innerText = "🔍 Wajah terdeteksi, memverifikasi...";
+            faceLockTimer = setTimeout(() => {
+              sudahTerdeteksi = true;
+              const fotoBase64 = ambilSnapshot();
+              camStatus.innerText = "📸 Snapshot diambil! Mengirim log...";
+              
+              google.script.run
+                .withSuccessHandler(tampilkanHasil)
+                .withFailureHandler(tampilkanError)
+                .prosesAksesWajah(fotoBase64);
+            }, 1500);
+          }
+        }
+      });
+    }
+
+    // 4. Kirim PIN Manual via google.script.run
+    function kirimPIN() {
+      const pin = pinInput.value;
+      if (!pin) {
+        alert("Silakan masukkan PIN terlebih dahulu!");
+        return;
+      }
+
+      submitBtn.disabled = true;
+      submitBtn.innerText = "MEMVERIFIKASI...";
+      const fotoBase64 = ambilSnapshot();
+
+      google.script.run
+        .withSuccessHandler(function(res) {
+          tampilkanHasil(res);
+          submitBtn.disabled = false;
+          submitBtn.innerText = "SUBMIT PASSCODE";
+          pinInput.value = "";
+        })
+        .withFailureHandler(function(err) {
+          tampilkanError(err);
+          submitBtn.disabled = false;
+          submitBtn.innerText = "SUBMIT PASSCODE";
+        })
+        .prosesAksesPIN(pin, fotoBase64);
+    }
+
+    // Izinkan tekan tombol Enter di kotak PIN
+    pinInput.addEventListener("keypress", function(e) {
+      if (e.key === "Enter") kirimPIN();
+    });
+
+    // 5. Menampilkan Feedback Hijau / Merah
+    function tampilkanHasil(res) {
+      statusBox.className = "status-box " + (res.sukses ? "status-success" : "status-error");
+      statusBox.innerText = res.pesan;
+      camStatus.innerText = "✅ Log tercatat di Google Sheets.";
+
+      // Reset status setelah 5 detik agar sistem siap digunakan kembali
+      setTimeout(() => {
+        statusBox.className = "status-box";
+        sudahTerdeteksi = false;
+        faceLockTimer = null;
+        camStatus.innerText = "📷 Kamera aktif - Posisikan wajah atau masukkan PIN";
+      }, 5000);
+    }
+
+    function tampilkanError(err) {
+      statusBox.className = "status-box status-error";
+      statusBox.innerText = "Terjadi kesalahan sistem: " + err.message;
+    }
+  </script>
+</body>
+</html>
